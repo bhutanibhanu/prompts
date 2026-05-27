@@ -20,11 +20,18 @@ The set forms a rough end-to-end SDLC pipeline:
 | `ship.md` | `/ship` | Quality gate | Runs the full pre-PR checklist (lint, tests, semgrep, /verify, /security-review), drafts and opens the PR if everything passes. |
 | `triage.md` | `/triage` | Post-deploy | Sentry issue → recent deploys → code → root-cause hypothesis → suggested action. |
 
+And one orchestrator that chains the above for feature work in Claude Code:
+
+| File | Slash command | What it does |
+|---|---|---|
+| `pipeline.md` | `/pipeline` | Phase-aware feature pipeline. Detects current git state and runs the right phase: scope (`/grill`), handoff + Codex QA, or ship. Hard checkpoints at each boundary. Claude Code only — invokes the Skill tool. |
+
 Plus a reference:
 
 | File | What |
 |---|---|
 | `MCPS.md` | Cheat sheet for the installed MCPs (GitHub, Playwright, Context7, Sentry, Semgrep, Sequential Thinking, Filesystem) — when to reach for each. |
+| `CLAUDE.md` | Global Claude Code instructions (lives at `~/.claude/CLAUDE.md`). Tells Claude when to suggest `/pipeline` from natural-language cues. |
 
 ## Typical workflow
 
@@ -60,8 +67,21 @@ new project idea
 
 | Tool | Path | Type |
 |---|---|---|
-| Claude Code | `~/.claude/skills/<name>/SKILL.md` | symlink → this folder |
-| Codex CLI   | `~/.codex/prompts/<name>.md`       | symlink → this folder |
+| Claude Code skills      | `~/.claude/skills/<name>/SKILL.md` | symlink → this folder |
+| Claude Code global      | `~/.claude/CLAUDE.md`              | symlink → this folder's `CLAUDE.md` |
+| Codex CLI prompts       | `~/.codex/prompts/<name>.md`       | symlink → this folder (excluding `pipeline.md`) |
+
+## Cloning to a new machine
+
+```bash
+git clone <repo-url> ~/dev/prompts
+cd ~/dev/prompts
+./install.sh
+```
+
+The installer creates all the symlinks listed above. If any target already
+exists as a non-symlink, install bails — move it aside (`mv <path> <path>.bak`)
+and re-run.
 
 ## Adding a new prompt
 
