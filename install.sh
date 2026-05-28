@@ -4,7 +4,7 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Prompts that work in both Claude Code and Codex CLI.
-CROSS_TOOL=(adr grill scaffold ship triage)
+CROSS_TOOL=(adr checkpoint grill resume scaffold ship triage)
 
 # Prompts that only make sense in Claude Code (use its Skill tool / orchestrate
 # other slash commands).

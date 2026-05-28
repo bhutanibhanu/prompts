@@ -26,6 +26,13 @@ And one orchestrator that chains the above for feature work in Claude Code:
 |---|---|---|
 | `pipeline.md` | `/pipeline` | Phase-aware feature pipeline. Detects current git state and runs the right phase: scope (`/grill`), handoff + Codex QA, or ship. Hard checkpoints at each boundary. Claude Code only — invokes the Skill tool. |
 
+Plus session-state utilities (orthogonal to the SDLC pipeline — they manage continuity between sessions):
+
+| File | Slash command | What it does |
+|---|---|---|
+| `checkpoint.md` | `/checkpoint` | Writes `HANDOFF.md` at the repo root capturing what was being worked on, current git state, files in flight, what's done/next, and known blockers. Run at the end of a session. |
+| `resume.md` | `/resume` | Reads `HANDOFF.md`, reconciles it with current git state, surfaces any drift, and re-establishes context. Run at the start of a session. |
+
 Plus a reference:
 
 | File | What |
