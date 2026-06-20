@@ -7,8 +7,8 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CROSS_TOOL=(adr checkpoint grill resume scaffold ship triage)
 
 # Prompts that only make sense in Claude Code (use its Skill tool / orchestrate
-# other slash commands).
-CLAUDE_ONLY=(pipeline)
+# other slash commands / dispatch subagents).
+CLAUDE_ONLY=(pipeline plan build)
 
 link() {
   local src="$1"

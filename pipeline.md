@@ -1,85 +1,150 @@
 ---
 name: pipeline
-description: Phase-aware orchestrator for feature work — grill → build → handoff → codex QA → ship. Detects current phase from git state. Use whenever starting a new feature or advancing one through QA/ship.
+description: Phase-aware orchestrator for feature work — scope → plan → supervised build → verify → codex QA → ship. Reads phase from an explicit state marker, runs each feature in its own git worktree, builds via an approval-gated subagent loop, and verifies in an isolated subagent. Use whenever starting a new feature or advancing one.
 ---
 
 # Feature Pipeline
 
-You orchestrate feature work end-to-end. There is ONE entry point and ONE command.
-You detect current phase from git state and act accordingly. The user has signed
-up for explicit checkpoints at key boundaries — never skip them.
+You orchestrate feature work end-to-end through ONE entry point. You read the current phase
+from an explicit state marker and run the matching phase. The user opted into checkpoints at
+every boundary — never skip them.
+
+**Philosophy (do not drift):** the model does the toil; the human keeps the wheel. The
+pipeline scopes, plans, implements (via subagents), verifies, QAs, and ships — but
+**nothing is committed without the human approving the diff**, and every phase boundary is a
+human checkpoint. The build phase is *supervised* auto-build, not unattended autonomy.
+
+## Pipeline state — the phase marker
+
+Each feature owns `docs/features/<slug>/state.json`:
+
+```json
+{
+  "slug": "<slug>",
+  "phase": "scoped",
+  "branch": "feat/<slug>",
+  "worktree": "/abs/path/to/worktree-or-null",
+  "updated": "2026-06-19T00:00:00Z"
+}
+```
+
+`phase` flows `scoped` → `planned` → `built` → `qa` → `approved` → `shipped`.
+
+**Always read phase from this file — never infer it from which files exist.** Update and
+commit the marker at every transition.
 
 ## Detect current phase
 
-1. Run `git rev-parse --is-inside-work-tree`. If not in a repo, abort with a
-   clear error explaining the pipeline only works inside a git repo.
-2. Get current branch: `git branch --show-current`.
-3. If on `main` or `master`, this is **Phase 1** (new feature).
-4. Otherwise, derive feature slug from branch name (strip `feat/` prefix) and
-   inspect `docs/features/<slug>/`:
-   - No `design.md`                                  → **Phase 1**
-   - `design.md` only                                → **Phase 3** (build assumed done)
-   - `design.md` + `handoff.md` + `qa.md`            → **Phase 6** (ship)
-   - Anything else (e.g. handoff but no qa)          → ask user which phase to run
+1. `git rev-parse --is-inside-work-tree`. Not a repo → abort with a clear error.
+2. `git branch --show-current`.
+3. On `main` / `master` with no feature context → **Scope**.
+4. Else derive slug from branch (strip `feat/`) and read `docs/features/<slug>/state.json`:
+   - `scoped`   → **Plan**
+   - `planned`  → **Build**
+   - `built`    → **Verify + QA**
+   - `qa`       → re-display the existing verdict and re-ask the human decision (idempotent)
+   - `approved` → **Ship**
+   - `shipped`  → tell the user it's shipped; offer worktree cleanup if still present
+5. **Marker missing** (older feature): infer ONCE from files (`design.md` only → `scoped`;
+   `+ progress.md` → `planned`; `+ handoff.md` + `qa.md` → `qa`), write the marker, proceed.
+6. **Ambiguous** (multiple feature dirs, partial files, dirty tree at a boundary): STOP and
+   ask. Never guess destructively.
 
-When state is ambiguous (multiple feature dirs, partial files, dirty working
-tree at a phase boundary), STOP and ask. Do not guess destructively.
+## Scope
 
-## Phase 1 — Scope
-
-1. If user didn't pass a description with `/pipeline`, ask for:
-   - a short feature slug in kebab-case
-   - a one-line description
-2. Create branch: `git checkout -b feat/<slug>` (only if currently on main/master;
-   otherwise confirm the user wants to switch).
-3. Invoke `/grill` with the description. Tell grill to write the brief to
-   `docs/features/<slug>/design.md` (override its default path).
-4. After grill returns and the file exists, commit:
+1. If the user didn't pass a description, ask for a kebab-case slug + a one-line description.
+2. **Create an isolated worktree** (confirm first):
+   - `root=$(git rev-parse --show-toplevel)`; `name=$(basename "$root")`
+   - `git worktree add "$root/../$name-<slug>" -b feat/<slug>` — isolates this feature from
+     your main tree and from other features in flight.
+   - Tell the user to `cd` into that path. If they prefer in-place, fall back to
+     `git checkout -b feat/<slug>` and record `"worktree": null`. Confirm either way before
+     creating anything.
+3. Invoke `/grill` with the description; tell it to write the brief to
+   `docs/features/<slug>/design.md`.
+4. Write `state.json` (`phase: "scoped"`, branch, worktree).
+5. Commit:
    ```
-   git add docs/features/<slug>/design.md
+   git add docs/features/<slug>/design.md docs/features/<slug>/state.json
    git commit -m "scope(<slug>): design doc"
    ```
-5. End Phase 1 with this exact handoff message to the user:
-   > Design committed on `feat/<slug>`. Build the feature with normal Claude Code
-   > workflow. When you're done coding and tests pass locally, run `/pipeline`
-   > again to advance to QA.
+6. End Scope with this handoff:
+   > Design committed on `feat/<slug>` in worktree `<path>`. Review `design.md`; when it's
+   > right, run `/pipeline` again from that worktree to break it into tasks.
 
-Then stop. Do not start building.
+Then stop.
 
-## Phase 3 — Handoff + Codex QA
+## Plan
 
-1. Verify the working tree is clean: `git status --porcelain`. If dirty, tell
-   user to commit pending changes first and stop.
-2. Derive slug from branch.
-3. Write `docs/features/<slug>/handoff.md` using the **Handoff template** below.
-   Fill the sections by reading `design.md` and running:
+1. Invoke `/plan` for the slug. It decomposes `design.md` into ordered, independently
+   verifiable tasks with acceptance criteria and writes `docs/features/<slug>/progress.md`.
+   `/plan` shows the task list to the user for approval before finalizing — let it.
+2. Set `phase: "planned"`. Commit:
+   ```
+   git add docs/features/<slug>/progress.md docs/features/<slug>/state.json
+   git commit -m "plan(<slug>): <N> tasks"
+   ```
+3. End Plan with this handoff:
+   > <N> tasks planned for `<slug>` in worktree `<path>`. Run `/pipeline` again from there to
+   > start the supervised build loop — each task is implemented by a subagent and shown to
+   > you for approval before it's committed.
+
+Then stop.
+
+## Build (supervised)
+
+1. Working tree must be clean (`git status --porcelain`). If dirty, stop and ask.
+2. Invoke `/build` for the slug. It runs the supervised loop: pick next task → Implementer
+   subagent writes code + tests in isolated context → tests run → **show the user the diff +
+   results → commit only on approval** → mark the task done in `progress.md` → next.
+   `/build` owns the per-task approval gate and the per-task commits; do not duplicate them.
+3. When `/build` reports all tasks done, it sets `phase: "built"`. Confirm the marker is
+   committed.
+4. End Build with this handoff:
+   > Build complete on `feat/<slug>`. Run `/pipeline` again to advance to verify + QA.
+
+Then stop.
+
+## Verify + QA
+
+1. Verify the working tree is clean. If dirty, tell the user to commit first and stop.
+2. Write `docs/features/<slug>/handoff.md` using the **Handoff template** below, filling it
+   from `design.md`, `progress.md`, and:
    - `git diff --stat $(git merge-base HEAD main)..HEAD`
    - `git diff $(git merge-base HEAD main)..HEAD` (skim for context)
-4. Commit:
+3. Commit:
    ```
-   git add docs/features/<slug>/handoff.md
+   git add docs/features/<slug>/handoff.md docs/features/<slug>/state.json
    git commit -m "handoff(<slug>): pre-QA handoff"
    ```
-5. Run codex QA via Bash (see **Codex QA invocation** below). Output goes to
-   `docs/features/<slug>/qa.md`.
-6. If codex command fails (not on PATH, auth error), STOP and tell the user
-   exactly what failed plus install instructions. Do not silently substitute.
+4. **Verify in an isolated subagent.** Dispatch ONE Verifier subagent via the Agent tool
+   using the **Verifier subagent prompt** below — its own context, review only. Capture its
+   report.
+5. Run **Codex QA** (see **Codex QA invocation** below) → `docs/features/<slug>/qa.md`. The
+   subagent is the same-model isolated reviewer; Codex is the cross-model second opinion.
+   Two reviewers, two different blind spots.
+6. If the codex command fails (not on PATH, auth error), STOP and tell the user exactly what
+   failed plus install instructions. Do not silently substitute.
 7. Commit:
    ```
-   git add docs/features/<slug>/qa.md
-   git commit -m "qa(<slug>): codex verdict"
+   git add docs/features/<slug>/qa.md docs/features/<slug>/state.json
+   git commit -m "qa(<slug>): verifier + codex verdict"
    ```
-8. Parse the verdict. Show the user:
-   - The Blockers list
-   - The Non-blocking issues list
-   - The Verdict (SHIP / NO_SHIP)
-   - Codex's reasoning
+8. Set `phase: "qa"`. Show the user, side by side:
+   - **Verifier subagent:** Blockers / Non-blocking / Coverage gaps
+   - **Codex:** Blockers / Non-blocking issues / Verdict (SHIP / NO_SHIP) / Reasoning
 9. **PAUSE FOR HUMAN INPUT.** Ask: "Fix blockers (back to build) / ship anyway / stop?"
-   Do not auto-fix. Do not auto-advance.
+   Never auto-fix, never auto-advance. If the user picks fix → route the fixes back through
+   `/build` (set `phase: "planned"` if new tasks are needed, else stay `built`). If ship →
+   set `phase: "approved"` and commit the marker.
 
-## Phase 6 — Ship
+## Ship
 
-Invoke `/ship`. It runs the full pre-PR gate and opens the PR. Done.
+1. Invoke `/ship`. It runs the full pre-PR gate and opens the PR.
+2. Set `phase: "shipped"` in the marker and commit it.
+3. Offer (do not auto-run) to clean up the worktree once the PR is merged or the user
+   confirms: `git worktree remove "<path>"` (and `git branch -d feat/<slug>` after merge).
+   Confirm first; never remove a worktree that holds uncommitted work.
 
 ## Handoff template
 
@@ -111,6 +176,48 @@ and the design doc. Keep it tight — bullets over paragraphs.
 ## Open questions
 <anything deferred or unresolved>
 ```
+
+## Verifier subagent prompt
+
+Dispatch via the Agent tool (general-purpose subagent, isolated context). Pass this prompt,
+substituting `<slug>`:
+
+```
+You are a code reviewer giving a second opinion on a feature before QA. Review ONLY —
+do not edit, fix, or commit anything.
+
+Read from the current working directory:
+- Design:   docs/features/<slug>/design.md
+- Handoff:  docs/features/<slug>/handoff.md
+- Progress: docs/features/<slug>/progress.md
+- ADRs:     any files in docs/adr/ — the feature must not violate an accepted decision
+
+Run `git diff $(git merge-base HEAD main)..HEAD` yourself and read the whole diff.
+
+Assess:
+- Correctness: does the code do what design.md says? Logic / edge-case / null / async bugs?
+- Conformance: does it contradict any accepted ADR? (cite the ADR number)
+- Security & data handling: anything risky with input, auth, secrets, file/network I/O?
+- Tests: do they test behavior, not implementation? Which scenarios are uncovered?
+
+Respond ONLY in this format. No preamble.
+
+## Blockers
+- (must-fix before ship; cite file:line)
+
+## Non-blocking issues
+- (should-fix later)
+
+## Coverage gaps
+- (untested scenarios worth adding)
+
+## Verdict
+SHIP | NO_SHIP
+```
+
+Keep this to ONE general verifier for now. A full multi-member panel (separate correctness /
+security / arch-conformance / coverage reviewers, run per task) is a deliberate later upgrade
+— do not build it here without the user explicitly opting in.
 
 ## Codex QA invocation
 
@@ -154,18 +261,25 @@ EOF
 )" > docs/features/<slug>/qa.md
 ```
 
-If `codex` is not on PATH, abort Phase 3 with this message:
+If `codex` is not on PATH, abort Verify + QA with this message:
 > Codex CLI not found. Install with `npm i -g @openai/codex` (verify current
 > install method) and ensure you're authenticated, then re-run `/pipeline`.
 
 ## Hard rules
 
-- **Never skip the Phase 3 triage checkpoint.** The user explicitly opted in.
-- **Never auto-fix codex blockers.** Always pause and let the user decide.
-- **Commit between every phase.** Each phase boundary is a clean rollback point.
-- **If anything is ambiguous, stop and ask.** Multiple feature dirs, unexpected
-  files, dirty tree, codex error — all stop the pipeline cleanly.
-- **Don't try to script the build phase.** It happens between calls to
-  `/pipeline`, with the user driving normally.
-- **Don't invent codex command flags.** If the default doesn't work, tell the
-  user and let them fix the skill file.
+- **Nothing commits without human approval of the diff.** `/build` shows every task's diff
+  and waits; the pipeline never lands unreviewed code.
+- **Never skip the Verify + QA checkpoint.** The user explicitly opted in.
+- **Never auto-fix codex (or verifier) blockers.** Always pause and let the user decide.
+- **Subagents implement and review; they never commit or pick their own work.** The
+  Implementer does one task; the Verifier reviews only.
+- **Phase comes from `state.json`, never from guesswork.** If the marker is missing, infer
+  once, write it, then proceed. Update and commit the marker at every transition.
+- **Create and remove worktrees only with explicit user confirmation.** Never remove a
+  worktree that holds uncommitted work.
+- **One commit per task in the build loop; commit between every phase.** Each boundary is a
+  clean rollback point.
+- **If anything is ambiguous, stop and ask.** Multiple feature dirs, unexpected files, dirty
+  tree, codex error, blocked task — all stop the pipeline cleanly.
+- **Don't invent codex command flags.** If the default doesn't work, tell the user and let
+  them fix the skill file.
