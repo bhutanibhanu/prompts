@@ -10,3 +10,10 @@ to run next from an explicit phase marker (scope → plan → supervised build �
 verify + Codex QA → ship).
 
 Don't auto-invoke — offer it and let the user confirm.
+
+## Verify before claiming
+
+Before stating how a tool, system, or environment behaves (what's installed,
+what a process is doing, what a config does), check it with a command, the
+file, or the docs first. If you can't verify, say it's unverified instead of
+stating it as fact.
